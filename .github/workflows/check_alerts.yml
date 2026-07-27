@@ -25,9 +25,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if [ -f state/seen_alerts.json ]; then
-            git add state/seen_alerts.json
-            git diff --staged --quiet || git commit -m "update seen alerts state"
+          if [ -f state/device_status.json ]; then
+            git add state/device_status.json
+            git diff --staged --quiet || git commit -m "update device status state"
             git push
           else
             echo "No state file yet, nothing to commit"
