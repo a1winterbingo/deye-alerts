@@ -6,6 +6,7 @@ import requests
 BASE_URL = "https://eu1-developer.deyecloud.com/v1.0"
 STATION_ID = 62060154
 STATE_FILE = "state/device_status.json"
+GRID_VOLTAGE_THRESHOLD = 100  # volts - below this, treat grid as absent
 
 DEVICE_LABELS = {"INVERTER": "inverter", "COLLECTOR": "data logger"}
 
@@ -44,6 +45,7 @@ def get_current_status(token):
             "deviceState": None,
         }
 
+    grid_voltage = None
     if device_sns:
         latest = requests.post(
             f"{BASE_URL}/device/latest",
@@ -55,8 +57,14 @@ def get_current_status(token):
             sn = d.get("deviceSn")
             if sn in status:
                 status[sn]["deviceState"] = d.get("deviceState")
+            for point in d.get("dataList", []):
+                if point.get("key") == "GridVoltageL1L2":
+                    try:
+                        grid_voltage = float(point.get("value"))
+                    except (TypeError, ValueError):
+                        grid_voltage = None
 
-    return status
+    return status, grid_voltage
 
 def load_previous():
     if os.path.exists(STATE_FILE):
@@ -64,10 +72,10 @@ def load_previous():
             return json.load(f)
     return None
 
-def save_status(status):
+def save_status(status, grid_online):
     os.makedirs("state", exist_ok=True)
     with open(STATE_FILE, "w") as f:
-        json.dump(status, f, indent=2)
+        json.dump({"devices": status, "grid_online": grid_online}, f, indent=2)
 
 def send_push(title, message):
     topic = os.environ["NTFY_TOPIC"]
@@ -97,17 +105,19 @@ def notify_change(sn, device_type, field, old_value, new_value):
 
 def main():
     token = get_token()
-    current = get_current_status(token)
-    print("Current status:", current)
+    current, grid_voltage = get_current_status(token)
+    grid_online = grid_voltage is not None and grid_voltage >= GRID_VOLTAGE_THRESHOLD
+    print(f"Current status: {current}, grid voltage: {grid_voltage}, grid_online: {grid_online}")
 
     previous = load_previous()
     if previous is None:
         print("First run - saving baseline, no notifications sent")
-        save_status(current)
+        save_status(current, grid_online)
         return
 
+    prev_devices = previous.get("devices", {})
     for sn, fields in current.items():
-        prev_fields = previous.get(sn, {})
+        prev_fields = prev_devices.get(sn, {})
         for field in ("connectStatus", "deviceState"):
             old_value = prev_fields.get(field)
             new_value = fields.get(field)
@@ -115,7 +125,20 @@ def main():
                 print(f"CHANGE: {sn} {field} {old_value} -> {new_value}")
                 notify_change(sn, fields.get("deviceType"), field, old_value, new_value)
 
-    save_status(current)
+    prev_grid_online = previous.get("grid_online")
+    if prev_grid_online is not None and grid_online != prev_grid_online:
+        if not grid_online:
+            send_push(
+                "Grid power lost",
+                f"No grid voltage detected ({grid_voltage}V). You're running on battery/solar only.",
+            )
+        else:
+            send_push(
+                "Grid power restored",
+                f"Grid voltage back to normal ({grid_voltage}V).",
+            )
+
+    save_status(current, grid_online)
 
 if __name__ == "__main__":
     main()
