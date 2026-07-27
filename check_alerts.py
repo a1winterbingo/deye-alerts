@@ -1,9 +1,11 @@
 import os
+import json
 import hashlib
 import requests
 
 BASE_URL = "https://eu1-developer.deyecloud.com/v1.0"
 STATION_ID = 62060154
+STATE_FILE = "state/device_status.json"
 
 def get_token():
     password_hash = hashlib.sha256(os.environ["DEYE_PASSWORD"].encode()).hexdigest()
@@ -20,8 +22,7 @@ def get_token():
     resp.raise_for_status()
     return resp.json()["accessToken"]
 
-def main():
-    token = get_token()
+def get_current_status(token):
     headers = {"Content-Type": "application/json", "Authorization": f"bearer {token}"}
 
     devices = requests.post(
@@ -29,12 +30,17 @@ def main():
         headers=headers,
         json={"page": 1, "size": 10, "stationIds": [STATION_ID]},
     )
-    print("DEVICE LIST RESPONSE:")
-    print(devices.json())
+    devices.raise_for_status()
+    device_items = devices.json().get("deviceListItems", [])
+    device_sns = [d.get("deviceSn") for d in device_items if d.get("deviceSn")]
 
-    device_data = devices.json()
-    device_sns = [d.get("deviceSn") for d in device_data.get("deviceListItems", []) if d.get("deviceSn")]
-    print("Found device SNs:", device_sns)
+    status = {}
+    for d in device_items:
+        status[d["deviceSn"]] = {
+            "deviceType": d.get("deviceType"),
+            "connectStatus": d.get("connectStatus"),
+            "deviceState": None,
+        }
 
     if device_sns:
         latest = requests.post(
@@ -42,8 +48,56 @@ def main():
             headers=headers,
             json={"deviceList": device_sns[:10]},
         )
-        print("DEVICE LATEST RESPONSE:")
-        print(latest.json())
+        latest.raise_for_status()
+        for d in latest.json().get("deviceDataList", []):
+            sn = d.get("deviceSn")
+            if sn in status:
+                status[sn]["deviceState"] = d.get("deviceState")
+
+    return status
+
+def load_previous():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    return None
+
+def save_status(status):
+    os.makedirs("state", exist_ok=True)
+    with open(STATE_FILE, "w") as f:
+        json.dump(status, f, indent=2)
+
+def send_push(sn, device_type, field, old_value, new_value):
+    topic = os.environ["NTFY_TOPIC"]
+    title = f"Deye status change: {device_type} {sn}"
+    message = f"{field} changed from {old_value} to {new_value}"
+    requests.post(
+        f"https://ntfy.sh/{topic}",
+        data=message.encode("utf-8"),
+        headers={"Title": title, "Priority": "high", "Tags": "warning"},
+    )
+
+def main():
+    token = get_token()
+    current = get_current_status(token)
+    print("Current status:", current)
+
+    previous = load_previous()
+    if previous is None:
+        print("First run - saving baseline, no notifications sent")
+        save_status(current)
+        return
+
+    for sn, fields in current.items():
+        prev_fields = previous.get(sn, {})
+        for field in ("connectStatus", "deviceState"):
+            old_value = prev_fields.get(field)
+            new_value = fields.get(field)
+            if old_value is not None and new_value != old_value:
+                print(f"CHANGE: {sn} {field} {old_value} -> {new_value}")
+                send_push(sn, fields.get("deviceType", "device"), field, old_value, new_value)
+
+    save_status(current)
 
 if __name__ == "__main__":
     main()
