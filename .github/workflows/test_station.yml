@@ -12,7 +12,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install requests
-      - run: python scripts/get_station.py
+      - run: python get_station.py
         env:
           DEYE_APP_ID: ${{ secrets.DEYE_APP_ID }}
           DEYE_APP_SECRET: ${{ secrets.DEYE_APP_SECRET }}
