@@ -1,12 +1,9 @@
 import os
-import json
 import hashlib
 import requests
-from datetime import datetime, timedelta, timezone
 
 BASE_URL = "https://eu1-developer.deyecloud.com/v1.0"
 STATION_ID = 62060154
-STATE_FILE = "state/seen_alerts.json"
 
 def get_token():
     password_hash = hashlib.sha256(os.environ["DEYE_PASSWORD"].encode()).hexdigest()
@@ -21,81 +18,32 @@ def get_token():
         },
     )
     resp.raise_for_status()
-    data = resp.json()
-    if "accessToken" not in data:
-        print("Token response:", data)
-        raise SystemExit("No accessToken - check response above")
-    return data["accessToken"]
-
-def get_alerts(token):
-    now = datetime.now(timezone.utc)
-    start = now - timedelta(days=7)
-    resp = requests.post(
-        f"{BASE_URL}/station/alert",
-        headers={"Content-Type": "application/json", "Authorization": f"bearer {token}"},
-        json={
-            "stationId": STATION_ID,
-            "startTime": start.strftime("%Y-%m-%d"),
-            "endTime": now.strftime("%Y-%m-%d"),
-            "page": 1,
-            "size": 100,
-        },
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    if "stationAlertItems" not in data:
-        print("Alert response:", data)
-        raise SystemExit("No stationAlertItems - check response above, endpoint/fields may need adjusting")
-    return data["stationAlertItems"]
-
-def alert_key(item):
-    raw = f"{item.get('deviceSn')}|{item.get('code')}|{item.get('alertTime')}"
-    return hashlib.sha1(raw.encode()).hexdigest()
-
-def load_seen():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE) as f:
-            return set(json.load(f))
-    return None
-
-def save_seen(keys):
-    os.makedirs("state", exist_ok=True)
-    with open(STATE_FILE, "w") as f:
-        json.dump(sorted(keys), f)
-
-def send_push(item):
-    topic = os.environ["NTFY_TOPIC"]
-    title = f"Deye Alert: {item.get('showName', 'Unknown')}"
-    message = f"Device {item.get('deviceSn')} - Level {item.get('level')} - {item.get('alertTime')}"
-    requests.post(
-        f"https://ntfy.sh/{topic}",
-        data=message.encode("utf-8"),
-        headers={"Title": title, "Priority": "high", "Tags": "warning"},
-    )
+    return resp.json()["accessToken"]
 
 def main():
     token = get_token()
-    alerts = get_alerts(token)
-    print(f"Fetched {len(alerts)} alert(s) from the last 7 days")
+    headers = {"Content-Type": "application/json", "Authorization": f"bearer {token}"}
 
-    seen = load_seen()
-    current_keys = {alert_key(a) for a in alerts}
+    devices = requests.post(
+        f"{BASE_URL}/station/device",
+        headers=headers,
+        json={"page": 1, "size": 10, "stationIds": [STATION_ID]},
+    )
+    print("DEVICE LIST RESPONSE:")
+    print(devices.json())
 
-    if seen is None:
-        print("First run - recording current alerts as baseline, no notifications sent")
-        save_seen(current_keys)
-        return
+    device_data = devices.json()
+    device_sns = [d.get("deviceSn") for d in device_data.get("deviceListItems", []) if d.get("deviceSn")]
+    print("Found device SNs:", device_sns)
 
-    new_keys = current_keys - seen
-    if new_keys:
-        print(f"{len(new_keys)} new alert(s) found - sending notifications")
-        for a in alerts:
-            if alert_key(a) in new_keys:
-                send_push(a)
-    else:
-        print("No new alerts")
-
-    save_seen(current_keys | seen)
+    if device_sns:
+        latest = requests.post(
+            f"{BASE_URL}/device/latest",
+            headers=headers,
+            json={"deviceList": device_sns[:10]},
+        )
+        print("DEVICE LATEST RESPONSE:")
+        print(latest.json())
 
 if __name__ == "__main__":
     main()
