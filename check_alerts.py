@@ -1,39 +1,52 @@
 import os
 import json
+import time
 import hashlib
 import requests
 
 BASE_URL = "https://eu1-developer.deyecloud.com/v1.0"
 STATION_ID = 62060154
 STATE_FILE = "state/device_status.json"
-GRID_VOLTAGE_THRESHOLD = 100  # volts - below this, treat grid as absent
+GRID_VOLTAGE_THRESHOLD = 100
 
 DEVICE_LABELS = {"INVERTER": "inverter", "COLLECTOR": "data logger"}
 
+def post_with_retry(url, headers, json_body, retries=3, delay=5):
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            resp = requests.post(url, headers=headers, json=json_body, timeout=15)
+            resp.raise_for_status()
+            return resp
+        except requests.exceptions.RequestException as e:
+            last_error = e
+            print(f"Request to {url} failed (attempt {attempt}/{retries}): {e}")
+            if attempt < retries:
+                time.sleep(delay)
+    raise last_error
+
 def get_token():
     password_hash = hashlib.sha256(os.environ["DEYE_PASSWORD"].encode()).hexdigest()
-    resp = requests.post(
+    resp = post_with_retry(
         f"{BASE_URL}/account/token?appId={os.environ['DEYE_APP_ID']}",
         headers={"Content-Type": "application/json"},
-        json={
+        json_body={
             "appSecret": os.environ["DEYE_APP_SECRET"],
             "email": os.environ["DEYE_EMAIL"],
             "companyId": "0",
             "password": password_hash,
         },
     )
-    resp.raise_for_status()
     return resp.json()["accessToken"]
 
 def get_current_status(token):
     headers = {"Content-Type": "application/json", "Authorization": f"bearer {token}"}
 
-    devices = requests.post(
+    devices = post_with_retry(
         f"{BASE_URL}/station/device",
         headers=headers,
-        json={"page": 1, "size": 10, "stationIds": [STATION_ID]},
+        json_body={"page": 1, "size": 10, "stationIds": [STATION_ID]},
     )
-    devices.raise_for_status()
     device_items = devices.json().get("deviceListItems", [])
     device_sns = [d.get("deviceSn") for d in device_items if d.get("deviceSn")]
 
@@ -47,12 +60,11 @@ def get_current_status(token):
 
     grid_voltage = None
     if device_sns:
-        latest = requests.post(
+        latest = post_with_retry(
             f"{BASE_URL}/device/latest",
             headers=headers,
-            json={"deviceList": device_sns[:10]},
+            json_body={"deviceList": device_sns[:10]},
         )
-        latest.raise_for_status()
         for d in latest.json().get("deviceDataList", []):
             sn = d.get("deviceSn")
             if sn in status:
@@ -87,7 +99,6 @@ def send_push(title, message):
 
 def notify_change(sn, device_type, field, old_value, new_value):
     label = DEVICE_LABELS.get(device_type, device_type)
-
     if field == "connectStatus":
         went_offline = old_value == 1 and new_value != 1
         went_online = new_value == 1 and old_value != 1
@@ -128,15 +139,9 @@ def main():
     prev_grid_online = previous.get("grid_online")
     if prev_grid_online is not None and grid_online != prev_grid_online:
         if not grid_online:
-            send_push(
-                "Grid power lost",
-                f"No grid voltage detected ({grid_voltage}V). You're running on battery/solar only.",
-            )
+            send_push("Grid power lost", f"No grid voltage detected ({grid_voltage}V). You're running on battery/solar only.")
         else:
-            send_push(
-                "Grid power restored",
-                f"Grid voltage back to normal ({grid_voltage}V).",
-            )
+            send_push("Grid power restored", f"Grid voltage back to normal ({grid_voltage}V).")
 
     save_status(current, grid_online)
 
