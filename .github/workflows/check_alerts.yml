@@ -1,7 +1,7 @@
 name: Check Deye Alerts
 on:
-  schedule:
-    - cron: '2-59/7 * * * *'
+  repository_dispatch:
+    types: [deye-check]
   workflow_dispatch:
 permissions:
   contents: write
