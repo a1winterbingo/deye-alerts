@@ -1,0 +1,12 @@
+{
+  "D257240032F0": {
+    "deviceType": "COLLECTOR",
+    "connectStatus": 1,
+    "deviceState": null
+  },
+  "2507263320": {
+    "deviceType": "INVERTER",
+    "connectStatus": 1,
+    "deviceState": 1
+  }
+}
