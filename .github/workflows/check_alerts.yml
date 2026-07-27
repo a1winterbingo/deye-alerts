@@ -17,7 +17,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install requests
-      - run: python scripts/check_alerts.py
+      - run: python check_alerts.py
         env:
           DEYE_APP_ID: ${{ secrets.DEYE_APP_ID }}
           DEYE_APP_SECRET: ${{ secrets.DEYE_APP_SECRET }}
